@@ -1,0 +1,121 @@
+version: "3.8"
+
+services:
+  db:
+    restart: always
+    image: postgres:14-alpine
+    networks:
+      - www
+    user: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: earthworm
+    volumes:
+      - data:/var/lib/postgres/main-data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - 5433:5432
+  redis:
+    image: redis:5-alpine
+    restart: always
+    networks:
+      - www
+    volumes:
+      - data:/var/lib/redis
+    ports:
+      - 6379:6379
+  logto:
+    restart: always
+    depends_on:
+      logtoPostgres:
+        condition: service_healthy
+    image: svhd/logto:1.18.0
+    networks:
+      - www
+    entrypoint: ["sh", "-c", "npm run cli db seed -- --swe && npm start"]
+    ports:
+      - 3010:3010
+      - 3011:3011
+    environment:
+      - TRUST_PROXY_HEADER=1
+      - DB_URL=postgres://postgres:p0stgr3s@logtoPostgres:5432/logto
+      # Mandatory for GitPod to map host env to the container, thus GitPod can dynamically configure the public URL of Logto;
+      # Or, you can leverage it for local testing.
+      - PORT=3010
+      - ADMIN_PORT=3011
+      - ENDPOINT
+      - ADMIN_ENDPOINT
+  logtoPostgres:
+    restart: always
+    image: postgres:14-alpine
+    networks:
+      - www
+    user: root
+    volumes:
+      - "./.volumes/logto_db:/var/lib/postgresql/data"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: p0stgr3s
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  api:
+    restart: always
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      logto:
+        condition: service_started
+    networks:
+      - www
+    ports:
+      - 3001:3001
+    environment:
+      - PORT=3001
+      - NODE_ENV=production
+      - DATABASE_URL=postgres://postgres:password@db:5432/earthworm
+      - REDIS_URL=redis://redis:6379
+      - SECRET=${SECRET:-sjldk92#sd903mnc./xklsjdf9sdfj}
+      - LOGTO_CLIENT_ID=${LOGTO_CLIENT_ID}
+      - LOGTO_CLIENT_SECRET=${LOGTO_CLIENT_SECRET}
+      - LOGTO_M2M_API=${LOGTO_M2M_API}
+      - LOGTO_ENDPOINT=http://logto:3010/
+      - BACKEND_ENDPOINT=http://api:3001/
+  client:
+    restart: always
+    build:
+      context: .
+      dockerfile: apps/client/Dockerfile
+      args:
+        - API_BASE=http://api:3001
+        - LOGTO_APP_ID=${LOGTO_APP_ID}
+        - LOGTO_ENDPOINT=http://logto:3010/
+        - BACKEND_ENDPOINT=http://api:3001/
+        - LOGTO_SIGN_IN_REDIRECT_URI=${LOGTO_SIGN_IN_REDIRECT_URI:-http://localhost:3000/callback}
+        - LOGTO_SIGN_OUT_REDIRECT_URI=${LOGTO_SIGN_OUT_REDIRECT_URI:-http://localhost:3000/}
+        - HELP_DOCS_URL=${HELP_DOCS_URL:-https://earthworm-docs.cuixueshe.com/get-started/}
+        - NODE_ENV=production
+    depends_on:
+      - api
+    networks:
+      - www
+    ports:
+      - 3000:80
+
+volumes:
+  data:
+    driver: local
+networks:
+  www:
